@@ -93,6 +93,9 @@ class CollectInstances(pyblish.api.ContextPlugin):
                 parents = self.get_all_parents(members)
             members_hierarchy = list(set(members + children + parents))
 
+            if 'families' not in data:
+                data['families'] = [data.get('family')]
+
             # Create the instance
             instance = context.create_instance(objset)
             instance[:] = members_hierarchy
@@ -100,15 +103,16 @@ class CollectInstances(pyblish.api.ContextPlugin):
             # Store the exact members of the object set
             instance.data["setMembers"] = members
 
+
             # Define nice label
             name = cmds.ls(objset, long=False)[0]   # use short name
             label = "{0} ({1})".format(name,
                                        data["asset"])
 
             # Append start frame and end frame to label if present
-            if "startFrame" and "endFrame" in data:
-                label += "  [{0}-{1}]".format(int(data["startFrame"]),
-                                              int(data["endFrame"]))
+            if "frameStart" and "frameEnd" in data:
+                label += "  [{0}-{1}]".format(int(data["frameStart"]),
+                                              int(data["frameEnd"]))
 
             instance.data["label"] = label
 
@@ -117,6 +121,8 @@ class CollectInstances(pyblish.api.ContextPlugin):
             # Produce diagnostic message for any graphical
             # user interface interested in visualising it.
             self.log.info("Found: \"%s\" " % instance.data["name"])
+            self.log.debug("DATA: \"%s\" " % instance.data)
+            
 
         def sort_by_family(instance):
             """Sort by family"""

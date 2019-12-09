@@ -1,7 +1,8 @@
 import os
+
 import pyblish.api
-import subprocess
 from pype.vendor import clique
+import pype.api
 
 
 class ExtractJpegEXR(pyblish.api.InstancePlugin):
@@ -16,12 +17,12 @@ class ExtractJpegEXR(pyblish.api.InstancePlugin):
     """
 
     label = "Extract Jpeg EXR"
+    hosts = ["shell"]
     order = pyblish.api.ExtractorOrder
     families = ["imagesequence", "render", "write", "source"]
-    host = ["shell"]
 
     def process(self, instance):
-        start = instance.data.get("startFrame")
+        start = instance.data.get("frameStart")
         stagingdir = os.path.normpath(instance.data.get("stagingDir"))
 
         collected_frames = os.listdir(stagingdir)
@@ -47,7 +48,8 @@ class ExtractJpegEXR(pyblish.api.InstancePlugin):
         profile = config_data.get(proj_name, config_data['__default__'])
 
         jpeg_items = []
-        jpeg_items.append("ffmpeg")
+        jpeg_items.append(
+            os.path.join(os.environ.get("FFMPEG_PATH"), "ffmpeg"))
         # override file if already exists
         jpeg_items.append("-y")
         # use same input args like with mov
@@ -58,9 +60,19 @@ class ExtractJpegEXR(pyblish.api.InstancePlugin):
         jpeg_items.append(full_output_path)
 
         subprocess_jpeg = " ".join(jpeg_items)
-        sub_proc = subprocess.Popen(subprocess_jpeg)
-        sub_proc.wait()
 
-        if "files" not in instance.data:
-            instance.data["files"] = list()
-        instance.data["files"].append(jpegFile)
+        # run subprocess
+        self.log.debug("{}".format(subprocess_jpeg))
+        pype.api.subprocess(subprocess_jpeg)
+
+        if "representations" not in instance.data:
+            instance.data["representations"] = []
+
+        representation = {
+            'name': 'jpg',
+            'ext': 'jpg',
+            'files': jpegFile,
+            "stagingDir": stagingdir,
+            "thumbnail": True
+        }
+        instance.data["representations"].append(representation)

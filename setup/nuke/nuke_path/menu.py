@@ -1,12 +1,21 @@
+import atom_server
 
-from pype.nuke.lib import writes_version_sync, onScriptLoad
+from pype.nuke.lib import (
+    writes_version_sync,
+    onScriptLoad,
+    checkInventoryVersions
+)
+
 import nuke
-from pype.api import Logger
+from pypeapp import Logger
 
-log = Logger.getLogger(__name__, "nuke")
+log = Logger().get_logger(__name__, "nuke")
 
 
 # nuke.addOnScriptSave(writes_version_sync)
-# nuke.addOnScriptSave(onScriptLoad)
+nuke.addOnScriptSave(onScriptLoad)
+nuke.addOnScriptLoad(checkInventoryVersions)
+nuke.addOnScriptSave(checkInventoryVersions)
+nuke.addOnScriptSave(writes_version_sync)
 
 log.info('Automatic syncing of write file knob to script version')

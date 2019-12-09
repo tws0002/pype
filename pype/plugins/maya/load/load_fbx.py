@@ -1,4 +1,6 @@
 import pype.maya.plugin
+import os
+from pypeapp import config
 
 
 class FBXLoader(pype.maya.plugin.ReferenceLoader):
@@ -17,6 +19,11 @@ class FBXLoader(pype.maya.plugin.ReferenceLoader):
         import maya.cmds as cmds
         from avalon import maya
 
+        try:
+            family = context["representation"]["context"]["family"]
+        except ValueError:
+            family = "fbx"
+
         # Ensure FBX plug-in is loaded
         cmds.loadPlugin("fbxmaya", quiet=True)
 
@@ -27,6 +34,17 @@ class FBXLoader(pype.maya.plugin.ReferenceLoader):
                               returnNewNodes=True,
                               groupReference=True,
                               groupName="{}:{}".format(namespace, name))
+
+        groupName = "{}:{}".format(namespace, name)
+
+        presets = config.get_presets(project=os.environ['AVALON_PROJECT'])
+        colors = presets['plugins']['maya']['load']['colors']
+
+        c = colors.get(family)
+        if c is not None:
+            cmds.setAttr(groupName + ".useOutlinerColor", 1)
+            cmds.setAttr(groupName + ".outlinerColor",
+                         c[0], c[1], c[2])
 
         self[:] = nodes
 

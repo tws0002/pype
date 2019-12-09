@@ -1,8 +1,10 @@
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseEvent, lib
 
 
 class Sync_to_Avalon(BaseEvent):
+
+    priority = 100
 
     ignore_entityType = [
         'assetversion', 'job', 'user', 'reviewsessionobject', 'timer',
@@ -14,7 +16,7 @@ class Sync_to_Avalon(BaseEvent):
         # If mongo_id textfield has changed: RETURN!
         # - infinite loop
         for ent in event['data']['entities']:
-            if 'keys' in ent:
+            if ent.get('keys') is not None:
                 if ca_mongoid in ent['keys']:
                     return
 
@@ -99,6 +101,8 @@ class Sync_to_Avalon(BaseEvent):
                         avalon_project = result['project']
 
         except Exception as e:
+            session.reset() # reset session to clear it
+
             message = str(e)
             title = 'Hey You! Unknown Error has been raised! (*look below*)'
             ftrack_message = (
@@ -107,19 +111,17 @@ class Sync_to_Avalon(BaseEvent):
                 ' for more information.'
             )
             items = [
-                {'type': 'label', 'value':'# Fatal Error'},
+                {'type': 'label', 'value': '# Fatal Error'},
                 {'type': 'label', 'value': '<p>{}</p>'.format(ftrack_message)}
             ]
-            self.show_interface(event, items, title)
-            self.log.error('Fatal error during sync: {}'.format(message))
+            self.show_interface(items, title, event=event)
+            self.log.error(
+                'Fatal error during sync: {}'.format(message), exc_info=True
+            )
 
         return
 
 
-def register(session, **kw):
+def register(session, plugins_presets):
     '''Register plugin. Called when used as an plugin.'''
-
-    if not isinstance(session, ftrack_api.session.Session):
-        return
-
-    Sync_to_Avalon(session).register()
+    Sync_to_Avalon(session, plugins_presets).register()

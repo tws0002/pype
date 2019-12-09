@@ -1,18 +1,17 @@
 import os
 import re
 import json
-from pype import lib as pypelib
 from pype.lib import get_avalon_database
 from bson.objectid import ObjectId
 import avalon
 import avalon.api
 from avalon import schema
 from avalon.vendor import toml, jsonschema
-from app.api import Logger
+from pypeapp import Logger, Anatomy, config
 
 ValidationError = jsonschema.ValidationError
 
-log = Logger.getLogger(__name__)
+log = Logger().get_logger(__name__)
 
 
 def get_ca_mongoid():
@@ -28,6 +27,11 @@ def import_to_avalon(
     output = {}
     errors = []
 
+    entity_type = entity.entity_type
+    ent_path = "/".join([ent["name"] for ent in entity['link']])
+
+    log.debug("{} [{}] - Processing".format(ent_path, entity_type))
+
     ca_mongoid = get_ca_mongoid()
     # Validate if entity has custom attribute avalon_mongo_id
     if ca_mongoid not in entity['custom_attributes']:
@@ -35,26 +39,21 @@ def import_to_avalon(
             'Custom attribute "{}" for "{}" is not created'
             ' or don\'t have set permissions for API'
         ).format(ca_mongoid, entity['name'])
+        log.error(msg)
         errors.append({'Custom attribute error': msg})
         output['errors'] = errors
         return output
 
     # Validate if entity name match REGEX in schema
-    try:
-        avalon_check_name(entity)
-    except ValidationError:
-        msg = '"{}" includes unsupported symbols like "dash" or "space"'
-        errors.append({'Unsupported character': msg})
-        output['errors'] = errors
-        return output
+    avalon_check_name(entity)
 
     entity_type = entity.entity_type
     # Project ////////////////////////////////////////////////////////////////
     if entity_type in ['Project']:
         type = 'project'
 
-        config = get_project_config(entity)
-        schema.validate(config)
+        proj_config = get_project_config(entity)
+        schema.validate(proj_config)
 
         av_project_code = None
         if av_project is not None and 'code' in av_project['data']:
@@ -62,13 +61,13 @@ def import_to_avalon(
         ft_project_code = ft_project['name']
 
         if av_project is None:
-            project_schema = pypelib.get_avalon_project_template_schema()
+            log.debug("{} - Creating project".format(project_name))
             item = {
-                'schema': project_schema,
+                'schema': "avalon-core:project-2.0",
                 'type': type,
                 'name': project_name,
                 'data': dict(),
-                'config': config,
+                'config': proj_config,
                 'parent': None,
             }
             schema.validate(item)
@@ -98,10 +97,20 @@ def import_to_avalon(
                         'Project name', av_project['name'], project_name
                     )}
                 )
+
             if (
                 av_project_code is not None and
                 av_project_code != ft_project_code
             ):
+                log.warning((
+                    "{0} - Project code"
+                    " is different in Avalon (\"{1}\")"
+                    " that in Ftrack (\"{2}\")!"
+                    " Trying to change it back in Ftrack to \"{1}\"."
+                ).format(
+                    ent_path, str(av_project_code), str(ft_project_code)
+                ))
+
                 entity['name'] = av_project_code
                 errors.append(
                     {'Changed name error': msg.format(
@@ -109,7 +118,18 @@ def import_to_avalon(
                     )}
                 )
 
-            session.commit()
+            try:
+                session.commit()
+                log.info((
+                    "{} - Project code was changed back to \"{}\""
+                ).format(ent_path, str(av_project_code)))
+            except Exception:
+                log.error(
+                    (
+                        "{} - Couldn't change project code back to \"{}\"."
+                    ).format(ent_path, str(av_project_code)),
+                    exc_info=True
+                )
 
             output['errors'] = errors
             return output
@@ -118,13 +138,13 @@ def import_to_avalon(
             # not override existing templates!
             templates = av_project['config'].get('template', None)
             if templates is not None:
-                for key, value in config['template'].items():
+                for key, value in proj_config['template'].items():
                     if (
                         key in templates and
                         templates[key] is not None and
                         templates[key] != value
                     ):
-                        config['template'][key] = templates[key]
+                        proj_config['template'][key] = templates[key]
 
         projectId = av_project['_id']
 
@@ -132,13 +152,23 @@ def import_to_avalon(
             entity, session, custom_attributes
         )
 
+        cur_data = av_project.get('data') or {}
+
+        enter_data = {}
+        for k, v in cur_data.items():
+            enter_data[k] = v
+        for k, v in data.items():
+            enter_data[k] = v
+
+        log.debug("{} - Updating data".format(ent_path))
         database[project_name].update_many(
             {'_id': ObjectId(projectId)},
             {'$set': {
                 'name': project_name,
-                'config': config,
-                'data': data,
-            }})
+                'config': proj_config,
+                'data': data
+            }}
+        )
 
         entity['custom_attributes'][ca_mongoid] = str(projectId)
         session.commit()
@@ -171,20 +201,18 @@ def import_to_avalon(
         entity, session, custom_attributes
     )
 
-    # 1. hierarchical entity have silo set to None
-    silo = None
-    if len(data['parents']) > 0:
-        silo = data['parents'][0]
-
     name = entity['name']
 
     avalon_asset = None
     # existence of this custom attr is already checked
     if ca_mongoid not in entity['custom_attributes']:
-        msg = '"{}" don\'t have "{}" custom attribute'
-        errors.append({'Missing Custom attribute': msg.format(
-            entity_type, ca_mongoid
-        )})
+        msg = (
+            "Entity type \"{}\" don't have created custom attribute \"{}\""
+            " or user \"{}\" don't have permissions to read or change it."
+        ).format(entity_type, ca_mongoid, session.api_user)
+
+        log.error(msg)
+        errors.append({'Missing Custom attribute': msg})
         output['errors'] = errors
         return output
 
@@ -195,7 +223,7 @@ def import_to_avalon(
     except Exception:
         mongo_id = ''
 
-    if mongo_id is not '':
+    if mongo_id != '':
         avalon_asset = database[project_name].find_one(
             {'_id': ObjectId(mongo_id)}
         )
@@ -205,26 +233,25 @@ def import_to_avalon(
             {'type': 'asset', 'name': name}
         )
         if avalon_asset is None:
-            asset_schema = pypelib.get_avalon_asset_template_schema()
             item = {
-                'schema': asset_schema,
+                'schema': "avalon-core:asset-3.0",
                 'name': name,
-                'silo': silo,
                 'parent': ObjectId(projectId),
                 'type': 'asset',
                 'data': data
             }
             schema.validate(item)
             mongo_id = database[project_name].insert_one(item).inserted_id
-
+            log.debug("{} - Created in project \"{}\"".format(
+                ent_path, project_name
+            ))
         # Raise error if it seems to be different ent. with same name
-        elif (
-            avalon_asset['data']['parents'] != data['parents'] or
-            avalon_asset['silo'] != silo
-        ):
+        elif avalon_asset['data']['parents'] != data['parents']:
             msg = (
-                'In Avalon DB already exists entity with name "{0}"'
-            ).format(name)
+                "{} - In Avalon DB already exists entity with name \"{}\""
+                "\n- \"{}\""
+            ).format(ent_path, name, "/".join(db_asset_path_items))
+            log.error(msg)
             errors.append({'Entity name duplication': msg})
             output['errors'] = errors
             return output
@@ -234,21 +261,20 @@ def import_to_avalon(
             mongo_id = avalon_asset['_id']
     else:
         if avalon_asset['name'] != entity['name']:
-            if silo is None or changeability_check_childs(entity) is False:
+            if changeability_check_childs(entity) is False:
                 msg = (
-                    'You can\'t change name {} to {}'
+                    '{} - You can\'t change name "{}" to "{}"'
                     ', avalon wouldn\'t work properly!'
                     '\n\nName was changed back!'
                     '\n\nCreate new entity if you want to change name.'
-                ).format(avalon_asset['name'], entity['name'])
+                ).format(ent_path, avalon_asset['name'], entity['name'])
+
+                log.warning(msg)
                 entity['name'] = avalon_asset['name']
                 session.commit()
                 errors.append({'Changed name error': msg})
 
-        if (
-            avalon_asset['silo'] != silo or
-            avalon_asset['data']['parents'] != data['parents']
-        ):
+        if avalon_asset['data']['parents'] != data['parents']:
             old_path = '/'.join(avalon_asset['data']['parents'])
             new_path = '/'.join(data['parents'])
 
@@ -260,10 +286,7 @@ def import_to_avalon(
 
             moved_back = False
             if 'visualParent' in avalon_asset['data']:
-                if silo is None:
-                    asset_parent_id = avalon_asset['parent']
-                else:
-                    asset_parent_id = avalon_asset['data']['visualParent']
+                asset_parent_id = avalon_asset['data']['visualParent'] or avalon_asset['parent']
 
                 asset_parent = database[project_name].find_one(
                     {'_id': ObjectId(asset_parent_id)}
@@ -276,6 +299,7 @@ def import_to_avalon(
                         avalon_asset['name'], old_path, new_path,
                         'entity was moved back'
                     )
+                    log.warning(msg)
                     moved_back = True
 
                 except Exception:
@@ -286,6 +310,7 @@ def import_to_avalon(
                     avalon_asset['name'], old_path, new_path,
                     'please move it back'
                 )
+                log.error(msg)
 
             errors.append({'Hierarchy change error': msg})
 
@@ -293,52 +318,81 @@ def import_to_avalon(
         output['errors'] = errors
         return output
 
+    avalon_asset = database[project_name].find_one(
+        {'_id': ObjectId(mongo_id)}
+    )
+
+    cur_data = avalon_asset.get('data') or {}
+
+    enter_data = {}
+    for k, v in cur_data.items():
+        enter_data[k] = v
+    for k, v in data.items():
+        enter_data[k] = v
+
     database[project_name].update_many(
         {'_id': ObjectId(mongo_id)},
         {'$set': {
             'name': name,
-            'silo': silo,
-            'data': data,
+            'data': enter_data,
             'parent': ObjectId(projectId)
         }})
-
+    log.debug("{} - Updated data (in project \"{}\")".format(
+        ent_path, project_name
+    ))
     entity['custom_attributes'][ca_mongoid] = str(mongo_id)
     session.commit()
 
     return output
 
 
-def get_avalon_attr(session):
+def get_avalon_attr(session, split_hierarchical=False):
     custom_attributes = []
-    query = 'CustomAttributeGroup where name is "avalon"'
-    all_avalon_attr = session.query(query).one()
-    for cust_attr in all_avalon_attr['custom_attribute_configurations']:
-        if 'avalon_' not in cust_attr['key']:
-            custom_attributes.append(cust_attr)
+    hier_custom_attributes = []
+    cust_attrs_query = (
+        "select id, entity_type, object_type_id, is_hierarchical"
+        " from CustomAttributeConfiguration"
+        " where group.name = \"avalon\""
+    )
+    all_avalon_attr = session.query(cust_attrs_query).all()
+    for cust_attr in all_avalon_attr:
+        if 'avalon_' in cust_attr['key']:
+            continue
+
+        if split_hierarchical:
+            if cust_attr["is_hierarchical"]:
+                hier_custom_attributes.append(cust_attr)
+                continue
+
+        custom_attributes.append(cust_attr)
+
+    if split_hierarchical:
+        # return tuple
+        return custom_attributes, hier_custom_attributes
+
     return custom_attributes
 
 
 def changeability_check_childs(entity):
-        if (entity.entity_type.lower() != 'task' and 'children' not in entity):
-            return True
-        childs = entity['children']
-        for child in childs:
-            if child.entity_type.lower() == 'task':
-                config = get_config_data()
-                if 'sync_to_avalon' in config:
-                    config = config['sync_to_avalon']
-                if 'statuses_name_change' in config:
-                    available_statuses = config['statuses_name_change']
-                else:
-                    available_statuses = []
-                ent_status = child['status']['name'].lower()
-                if ent_status not in available_statuses:
-                    return False
-            # If not task go deeper
-            elif changeability_check_childs(child) is False:
-                return False
-        # If everything is allright
+    if (entity.entity_type.lower() != 'task' and 'children' not in entity):
         return True
+    childs = entity['children']
+    for child in childs:
+        if child.entity_type.lower() == 'task':
+            available_statuses = config.get_presets().get(
+                "ftrack", {}).get(
+                "ftrack_config", {}).get(
+                "sync_to_avalon", {}).get(
+                "statuses_name_change", []
+            )
+            ent_status = child['status']['name'].lower()
+            if ent_status not in available_statuses:
+                return False
+        # If not task go deeper
+        elif changeability_check_childs(child) is False:
+            return False
+    # If everything is allright
+    return True
 
 
 def get_data(entity, session, custom_attributes):
@@ -358,7 +412,17 @@ def get_data(entity, session, custom_attributes):
     data['ftrackId'] = entity['id']
     data['entityType'] = entity_type
 
+    ent_types_query = "select id, name from ObjectType"
+    ent_types = session.query(ent_types_query).all()
+    ent_types_by_name = {
+        ent_type["name"]: ent_type["id"] for ent_type in ent_types
+    }
+
     for cust_attr in custom_attributes:
+        # skip hierarchical attributes
+        if cust_attr.get('is_hierarchical', False):
+            continue
+
         key = cust_attr['key']
         if cust_attr['entity_type'].lower() in ['asset']:
             data[key] = entity['custom_attributes'][key]
@@ -376,11 +440,18 @@ def get_data(entity, session, custom_attributes):
             # Put space between capitals (e.g. 'AssetBuild' -> 'Asset Build')
             entity_type_full = re.sub(r"(\w)([A-Z])", r"\1 \2", entity_type)
             # Get object id of entity type
-            query = 'ObjectType where name is "{}"'.format(entity_type_full)
-            ent_obj_type_id = session.query(query).one()['id']
+            ent_obj_type_id = ent_types_by_name.get(entity_type_full)
+
+            # Backup soluction when id is not found by prequeried objects
+            if not ent_obj_type_id:
+                query = 'ObjectType where name is "{}"'.format(
+                    entity_type_full
+                )
+                ent_obj_type_id = session.query(query).one()['id']
 
             if cust_attr['object_type_id'] == ent_obj_type_id:
-                data[key] = entity['custom_attributes'][key]
+                if key in entity['custom_attributes']:
+                    data[key] = entity['custom_attributes'][key]
 
     if entity_type in ['Project']:
         data['code'] = entity['name']
@@ -454,20 +525,34 @@ def get_avalon_project(ft_project):
     return avalon_project
 
 
-def get_project_config(entity):
-    config = {}
-    config['schema'] = pypelib.get_avalon_project_config_schema()
-    config['tasks'] = get_tasks(entity)
-    config['apps'] = get_project_apps(entity)
-    config['template'] = pypelib.get_avalon_project_template()
+def get_avalon_project_template():
+    """Get avalon template
 
-    return config
+    Returns:
+        dictionary with templates
+    """
+    templates = Anatomy().templates
+    return {
+        'workfile': templates["avalon"]["workfile"],
+        'work': templates["avalon"]["work"],
+        'publish': templates["avalon"]["publish"]
+    }
+
+
+def get_project_config(entity):
+    proj_config = {}
+    proj_config['schema'] = 'avalon-core:config-1.0'
+    proj_config['tasks'] = get_tasks(entity)
+    proj_config['apps'] = get_project_apps(entity)
+    proj_config['template'] = get_avalon_project_template()
+
+    return proj_config
+
 
 def get_tasks(project):
-    return [
-        {'name': task_type['name']} for task_type in project[
-        'project_schema']['_task_type_schema']['types']
-    ]
+    task_types = project['project_schema']['_task_type_schema']['types']
+    return [{'name': task_type['name']} for task_type in task_types]
+
 
 def get_project_apps(entity):
     """ Get apps from project
@@ -481,66 +566,43 @@ def get_project_apps(entity):
     apps = []
     for app in entity['custom_attributes']['applications']:
         try:
-            app_config = {}
-            app_config['name'] = app
-            app_config['label'] = toml.load(avalon.lib.which_app(app))['label']
+            toml_path = avalon.lib.which_app(app)
+            if not toml_path:
+                log.warning((
+                    'Missing config file for application "{}"'
+                ).format(app))
+                continue
 
-            apps.append(app_config)
+            apps.append({
+                'name': app,
+                'label': toml.load(toml_path)['label']
+            })
 
         except Exception as e:
             log.warning('Error with application {0} - {1}'.format(app, e))
     return apps
 
 
-def avalon_check_name(entity, inSchema=None):
-    ValidationError = jsonschema.ValidationError
-    alright = True
-    name = entity['name']
-    if " " in name:
-        alright = False
+def avalon_check_name(entity, in_schema=None):
+    default_pattern = "^[a-zA-Z0-9_.]*$"
 
-    data = {}
-    data['data'] = {}
-    data['type'] = 'asset'
-    schema = "avalon-core:asset-2.0"
-    # TODO have project any REGEX check?
-    if entity.entity_type in ['Project']:
-        # data['type'] = 'project'
-        name = entity['full_name']
-        # schema = get_avalon_project_template_schema()
+    name = entity["name"]
+    schema_name = "asset-3.0"
 
-    data['silo'] = 'Film'
+    if in_schema:
+        schema_name = in_schema
+    elif entity.entity_type.lower() == "project":
+        name = entity["full_name"]
+        schema_name = "project-2.0"
 
-    if inSchema is not None:
-        schema = inSchema
-    data['schema'] = schema
-    data['name'] = name
-    try:
-        avalon.schema.validate(data)
-    except ValidationError:
-        alright = False
-
-    if alright is False:
-        msg = '"{}" includes unsupported symbols like "dash" or "space"'
+    schema_obj = avalon.schema._cache.get(schema_name + ".json")
+    name_pattern = schema_obj.get("properties", {}).get("name", {}).get(
+        "pattern", default_pattern
+    )
+    if not re.match(name_pattern, name):
+        msg = "\"{}\" includes unsupported symbols like \"dash\" or \"space\""
         raise ValueError(msg.format(name))
 
-
-def get_config_data():
-    path_items = [pypelib.get_presets_path(), 'ftrack', 'ftrack_config.json']
-    filepath = os.path.sep.join(path_items)
-    data = dict()
-    try:
-        with open(filepath) as data_file:
-            data = json.load(data_file)
-
-    except Exception as e:
-        msg = (
-            'Loading "Ftrack Config file" Failed.'
-            ' Please check log for more information.'
-        )
-        log.warning("{} - {}".format(msg, str(e)))
-
-    return data
 
 def show_errors(obj, event, errors):
     title = 'Hey You! You raised few Errors! (*look below*)'
@@ -563,4 +625,4 @@ def show_errors(obj, event, errors):
             obj.log.error(
                 '{}: {}'.format(key, message)
             )
-    obj.show_interface(event, items, title)
+    obj.show_interface(items, title, event=event)

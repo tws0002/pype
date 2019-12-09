@@ -5,8 +5,10 @@ from avalon import lib as avalonlib
 import acre
 from pype import api as pype
 from pype import lib as pypelib
-from .avalon_sync import get_config_data
+from pypeapp import config
 from .ftrack_base_handler import BaseHandler
+
+from pypeapp import Anatomy
 
 
 class AppAction(BaseHandler):
@@ -21,12 +23,13 @@ class AppAction(BaseHandler):
     '''
 
     type = 'Application'
+    preactions = ['start.timer']
 
     def __init__(
-        self, session, label, name, executable,
-        variant=None, icon=None, description=None
+        self, session, label, name, executable, variant=None,
+        icon=None, description=None, preactions=[], plugins_presets={}
     ):
-        super().__init__(session)
+        super().__init__(session, plugins_presets)
         '''Expects a ftrack_api.Session instance'''
 
         if label is None:
@@ -42,6 +45,7 @@ class AppAction(BaseHandler):
         self.variant = variant
         self.icon = icon
         self.description = description
+        self.preactions.extend(preactions)
 
     def register(self):
         '''Registers the action, subscribing the discover and launch topics.'''
@@ -90,6 +94,9 @@ class AppAction(BaseHandler):
         ):
             return False
 
+        if entities[0]['parent'].entity_type.lower() == 'project':
+            return False
+
         ft_project = entities[0]['project']
 
         database = pypelib.get_avalon_database()
@@ -114,6 +121,12 @@ class AppAction(BaseHandler):
         args = self._translate_event(
             self.session, event
         )
+
+        preactions_launched = self._handle_preactions(
+            self.session, event
+        )
+        if preactions_launched is False:
+            return
 
         response = self.launch(
             self.session, *args
@@ -169,7 +182,8 @@ class AppAction(BaseHandler):
         os.environ["AVALON_APP"] = self.identifier.split("_")[0]
         os.environ["AVALON_APP_NAME"] = self.identifier
 
-        anatomy = pype.Anatomy
+        anatomy = Anatomy()
+
         hierarchy = ""
         parents = database[project_name].find_one({
             "type": 'asset',
@@ -179,20 +193,50 @@ class AppAction(BaseHandler):
         if parents:
             hierarchy = os.path.join(*parents)
 
-        data = {"project": {"name": entity['project']['full_name'],
-                            "code": entity['project']['name']},
-                "task": entity['name'],
-                "asset": entity['parent']['name'],
-                "hierarchy": hierarchy}
-        try:
-            anatomy = anatomy.format(data)
-        except Exception as e:
-            self.log.error(
-                "{0} Error in anatomy.format: {1}".format(__name__, e)
+        application = avalonlib.get_application(os.environ["AVALON_APP_NAME"])
+
+        data = {
+            "root": os.environ.get("PYPE_STUDIO_PROJECTS_MOUNT"),
+            "project": {
+                "name": entity['project']['full_name'],
+                "code": entity['project']['name']
+            },
+            "task": entity['name'],
+            "asset": entity['parent']['name'],
+            "app": application["application_dir"],
+            "hierarchy": hierarchy,
+        }
+
+        av_project = database[project_name].find_one({"type": 'project'})
+        templates = None
+        if av_project:
+            work_template = av_project.get('config', {}).get('template', {}).get(
+                'work', None
             )
-        os.environ["AVALON_WORKDIR"] = os.path.join(
-            anatomy.work.root, anatomy.work.folder
-        )
+        work_template = None
+        try:
+            work_template = work_template.format(**data)
+        except Exception:
+            try:
+                anatomy = anatomy.format(data)
+                work_template = anatomy["work"]["folder"]
+
+            except Exception as exc:
+                msg = "{} Error in anatomy.format: {}".format(
+                    __name__, str(exc)
+                )
+                self.log.error(msg, exc_info=True)
+                return {
+                    'success': False,
+                    'message': msg
+                }
+
+        workdir = os.path.normpath(work_template)
+        os.environ["AVALON_WORKDIR"] = workdir
+        try:
+            os.makedirs(workdir)
+        except FileExistsError:
+            pass
 
         # collect all parents from the task
         parents = []
@@ -210,13 +254,22 @@ class AppAction(BaseHandler):
         tools_env = acre.get_tools(tools_attr)
         env = acre.compute(tools_env)
         env = acre.merge(env, current_env=dict(os.environ))
+        env = acre.append(dict(os.environ), env)
+
+
+        #
+        # tools_env = acre.get_tools(tools)
+        # env = acre.compute(dict(tools_env))
+        # env = acre.merge(env, dict(os.environ))
+        # os.environ = acre.append(dict(os.environ), env)
+        # os.environ = acre.compute(os.environ)
 
         # Get path to execute
-        st_temp_path = os.environ['PYPE_STUDIO_TEMPLATES']
+        st_temp_path = os.environ['PYPE_CONFIG']
         os_plat = platform.system().lower()
 
         # Path to folder with launchers
-        path = os.path.join(st_temp_path, 'bin', os_plat)
+        path = os.path.join(st_temp_path, 'launchers', os_plat)
         # Full path to executable launcher
         execfile = None
 
@@ -246,7 +299,7 @@ class AppAction(BaseHandler):
                 try:
                     fp = open(execfile)
                 except PermissionError as p:
-                    self.log.error('Access denied on {0} - {1}'.format(
+                    self.log.exception('Access denied on {0} - {1}'.format(
                         execfile, p))
                     return {
                         'success': False,
@@ -285,19 +338,11 @@ class AppAction(BaseHandler):
                     }
                 pass
 
-        # RUN TIMER IN FTRACK
-        username = event['source']['user']['username']
-        user_query = 'User where username is "{}"'.format(username)
-        user = session.query(user_query).one()
-        task = session.query('Task where id is {}'.format(entity['id'])).one()
-        self.log.info('Starting timer for task: ' + task['name'])
-        user.start_timer(task, force=True)
-
         # Change status of task to In progress
-        config = get_config_data()
+        presets = config.get_presets()["ftrack"]["ftrack_config"]
 
-        if 'status_update' in config:
-            statuses = config['status_update']
+        if 'status_update' in presets:
+            statuses = presets['status_update']
 
             actual_status = entity['status']['name'].lower()
             next_status_name = None
@@ -309,18 +354,22 @@ class AppAction(BaseHandler):
 
             if next_status_name is not None:
                 try:
-                    query = 'Status where name is "{}"'.format(next_status_name)
+                    query = 'Status where name is "{}"'.format(
+                        next_status_name
+                    )
                     status = session.query(query).one()
                     entity['status'] = status
                     session.commit()
                 except Exception:
                     msg = (
-                        'Status "{}" in config wasn\'t found on Ftrack'
+                        'Status "{}" in presets wasn\'t found on Ftrack'
                     ).format(next_status_name)
                     self.log.warning(msg)
 
         # Set origin avalon environments
         for key, value in env_origin.items():
+            if value == None:
+                value = ""
             os.environ[key] = value
 
         return {

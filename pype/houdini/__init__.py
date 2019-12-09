@@ -10,10 +10,7 @@ from avalon.houdini import pipeline as houdini
 
 from pype.houdini import lib
 
-from pype.lib import (
-    any_outdated,
-    update_task_from_path
-)
+from pype.lib import any_outdated
 
 
 PARENT_DIR = os.path.dirname(__file__)
@@ -57,8 +54,6 @@ def on_save(*args):
 
     avalon.logger.info("Running callback on save..")
 
-    update_task_from_path(hou.hipFile.path())
-
     nodes = lib.get_id_required_nodes()
     for node, new_id in lib.generate_ids(nodes):
         lib.set_id(node, new_id, overwrite=False)
@@ -67,8 +62,6 @@ def on_save(*args):
 def on_open(*args):
 
     avalon.logger.info("Running callback on open..")
-
-    update_task_from_path(hou.hipFile.path())
 
     if any_outdated():
         from ..widgets import popup
@@ -84,7 +77,7 @@ def on_open(*args):
 
             # Show outdated pop-up
             def _on_show_inventory():
-                import avalon.tools.cbsceneinventory as tool
+                import avalon.tools.sceneinventory as tool
                 tool.show(parent=parent)
 
             dialog = popup.Popup(parent=parent)

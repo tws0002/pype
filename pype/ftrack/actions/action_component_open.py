@@ -1,9 +1,9 @@
+import os
 import sys
 import argparse
 import logging
 import subprocess
-import os
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseAction
 
 
@@ -15,9 +15,8 @@ class ComponentOpen(BaseAction):
     # Action label
     label = 'Open File'
     # Action icon
-    icon = (
-        'https://cdn4.iconfinder.com/data/icons/rcons-application/32/'
-        'application_go_run-256.png'
+    icon = '{}/ftrack/action_icons/ComponentOpen.svg'.format(
+        os.environ.get('PYPE_STATICS_SERVER', '')
     )
 
     def discover(self, session, entities, event):
@@ -66,16 +65,10 @@ class ComponentOpen(BaseAction):
         }
 
 
-def register(session, **kw):
+def register(session, plugins_presets={}):
     '''Register action. Called when used as an event plugin.'''
 
-    # Validate that session is an instance of ftrack_api.Session. If not,
-    # assume that register is being called from an old or incompatible API and
-    # return without doing anything.
-    if not isinstance(session, ftrack_api.session.Session):
-        return
-
-    ComponentOpen(session).register()
+    ComponentOpen(session, plugins_presets).register()
 
 
 def main(arguments=None):

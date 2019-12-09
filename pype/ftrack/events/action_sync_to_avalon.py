@@ -2,12 +2,17 @@ import os
 import sys
 import argparse
 import logging
-import ftrack_api
 import json
+import collections
+import time
+
+from pypeapp import config
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseAction, lib
+from pype.vendor.ftrack_api import session as fa_session
 
 
-class Sync_To_Avalon(BaseAction):
+class SyncToAvalon(BaseAction):
     '''
     Synchronizing data action - from Ftrack to Avalon DB
 
@@ -45,14 +50,35 @@ class Sync_To_Avalon(BaseAction):
     #: Action identifier.
     identifier = 'sync.to.avalon'
     #: Action label.
-    label = 'SyncToAvalon'
+    label = "Pype Admin"
+    variant = "- Sync To Avalon (Server)"
     #: Action description.
     description = 'Send data from Ftrack to Avalon'
     #: Action icon.
-    icon = (
-        'https://cdn1.iconfinder.com/data/icons/hawcons/32/'
-        '699650-icon-92-inbox-download-512.png'
+    icon = '{}/ftrack/action_icons/PypeAdmin.svg'.format(
+        os.environ.get(
+            'PYPE_STATICS_SERVER',
+            'http://localhost:{}'.format(
+                config.get_presets().get('services', {}).get(
+                    'statics_server', {}
+                ).get('default_port', 8021)
+            )
+        )
     )
+
+    project_query = (
+        "select full_name, name, custom_attributes"
+        ", project_schema._task_type_schema.types.name"
+        " from Project where full_name is \"{}\""
+    )
+
+    entities_query = (
+        "select id, name, parent_id, link, custom_attributes"
+        " from TypedContext where project.full_name is \"{}\""
+    )
+
+    # Entity type names(lowered) that won't be synchronized with their children
+    ignore_entity_types = ["task", "milestone"]
 
     def register(self):
         self.session.event_hub.subscribe(
@@ -71,7 +97,7 @@ class Sync_To_Avalon(BaseAction):
         ''' Validation '''
         roleCheck = False
         discover = False
-        roleList = ['Administrator', 'Project Manager']
+        roleList = ['Pypeclub', 'Administrator', 'Project Manager']
         userId = event['source']['user']['id']
         user = session.query('User where id is ' + userId).one()
 
@@ -88,6 +114,7 @@ class Sync_To_Avalon(BaseAction):
         return discover
 
     def launch(self, session, entities, event):
+        time_start = time.time()
         message = ""
 
         # JOB SETTINGS
@@ -103,43 +130,83 @@ class Sync_To_Avalon(BaseAction):
         })
         session.commit()
         try:
-            self.importable = []
+            self.log.debug("Preparing entities for synchronization")
 
-            # get from top entity in hierarchy all parent entities
-            top_entity = entities[0]['link']
-            if len(top_entity) > 1:
-                for e in top_entity:
-                    parent_entity = session.get(e['type'], e['id'])
-                    self.importable.append(parent_entity)
+            if entities[0].entity_type.lower() == "project":
+                ft_project_name = entities[0]["full_name"]
+            else:
+                ft_project_name = entities[0]["project"]["full_name"]
 
-            # get all child entities separately/unique
-            for entity in entities:
-                self.add_childs_to_importable(entity)
+            project_entities = session.query(
+                self.entities_query.format(ft_project_name)
+            ).all()
+
+            ft_project = session.query(
+                self.project_query.format(ft_project_name)
+            ).one()
+
+            entities_by_id = {}
+            entities_by_parent = collections.defaultdict(list)
+
+            entities_by_id[ft_project["id"]] = ft_project
+            for ent in project_entities:
+                entities_by_id[ent["id"]] = ent
+                entities_by_parent[ent["parent_id"]].append(ent)
+
+            importable = []
+            for ent_info in event["data"]["selection"]:
+                ent = entities_by_id[ent_info["entityId"]]
+                for link_ent_info in ent["link"]:
+                    link_ent = entities_by_id[link_ent_info["id"]]
+                    if (
+                        ent.entity_type.lower() in self.ignore_entity_types or
+                        link_ent in importable
+                    ):
+                        continue
+
+                    importable.append(link_ent)
+
+            def add_children(parent_id):
+                ents = entities_by_parent[parent_id]
+                for ent in ents:
+                    if ent.entity_type.lower() in self.ignore_entity_types:
+                        continue
+
+                    if ent not in importable:
+                        importable.append(ent)
+
+                    add_children(ent["id"])
+
+            # add children of selection to importable
+            for ent_info in event["data"]["selection"]:
+                add_children(ent_info["entityId"])
 
             # Check names: REGEX in schema/duplicates - raise error if found
             all_names = []
             duplicates = []
 
-            for e in self.importable:
-                lib.avalon_check_name(e)
-                if e['name'] in all_names:
-                    duplicates.append("'{}'".format(e['name']))
+            for entity in importable:
+                lib.avalon_check_name(entity)
+                if entity.entity_type.lower() == "project":
+                    continue
+
+                if entity['name'] in all_names:
+                    duplicates.append("'{}'".format(entity['name']))
                 else:
-                    all_names.append(e['name'])
+                    all_names.append(entity['name'])
 
             if len(duplicates) > 0:
+                # TODO Show information to user and return False
                 raise ValueError(
                     "Entity name duplication: {}".format(", ".join(duplicates))
                 )
 
             # ----- PROJECT ------
-            # store Ftrack project- self.importable[0] must be project entity!!
-            ft_project = self.importable[0]
             avalon_project = lib.get_avalon_project(ft_project)
             custom_attributes = lib.get_avalon_attr(session)
 
             # Import all entities to Avalon DB
-            for entity in self.importable:
+            for entity in importable:
                 result = lib.import_to_avalon(
                     session=session,
                     entity=entity,
@@ -147,7 +214,8 @@ class Sync_To_Avalon(BaseAction):
                     av_project=avalon_project,
                     custom_attributes=custom_attributes
                 )
-
+                # TODO better error handling
+                # maybe split into critical, warnings and messages?
                 if 'errors' in result and len(result['errors']) > 0:
                     job['status'] = 'failed'
                     session.commit()
@@ -167,10 +235,14 @@ class Sync_To_Avalon(BaseAction):
             session.commit()
 
         except ValueError as ve:
+            # TODO remove this part!!!!
             job['status'] = 'failed'
             session.commit()
             message = str(ve)
-            self.log.error('Error during syncToAvalon: {}'.format(message))
+            self.log.error(
+                'Error during syncToAvalon: {}'.format(message),
+                exc_info=True
+            )
 
         except Exception as e:
             job['status'] = 'failed'
@@ -181,12 +253,29 @@ class Sync_To_Avalon(BaseAction):
                 exc_type, fname, exc_tb.tb_lineno
             )
             self.log.error(
-                'Error during syncToAvalon: {}'.format(log_message)
+                'Error during syncToAvalon: {}'.format(log_message),
+                exc_info=True
             )
+            # TODO add traceback to message and show to user
             message = (
                 'Unexpected Error'
                 ' - Please check Log for more information'
             )
+
+        finally:
+            if job['status'] in ['queued', 'running']:
+                job['status'] = 'failed'
+
+            session.commit()
+
+            time_end = time.time()
+            self.log.debug("Synchronization took \"{}\"".format(
+                str(time_end - time_start)
+            ))
+
+            if job["status"] != "failed":
+                self.log.debug("Triggering Sync hierarchical attributes")
+                self.trigger_action("sync.hierarchical.attrs", event)
 
         if len(message) > 0:
             message = "Unable to sync: {}".format(message)
@@ -200,27 +289,14 @@ class Sync_To_Avalon(BaseAction):
             'message': "Synchronization was successfull"
         }
 
-    def add_childs_to_importable(self, entity):
-        if not (entity.entity_type in ['Task']):
-            if entity not in self.importable:
-                self.importable.append(entity)
 
-            if entity['children']:
-                childrens = entity['children']
-                for child in childrens:
-                    self.add_childs_to_importable(child)
-
-
-def register(session, **kw):
+def register(session, plugins_presets):
     '''Register plugin. Called when used as an plugin.'''
 
     # Validate that session is an instance of ftrack_api.Session. If not,
     # assume that register is being called from an old or incompatible API and
     # return without doing anything.
-    if not isinstance(session, ftrack_api.session.Session):
-        return
-
-    Sync_To_Avalon(session).register()
+    SyncToAvalon(session, plugins_presets).register()
 
 
 def main(arguments=None):

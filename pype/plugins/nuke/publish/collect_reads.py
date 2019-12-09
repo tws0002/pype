@@ -6,7 +6,7 @@ import pyblish.api
 import logging
 from avalon import io, api
 
-log = logging.getLogger(__name__)
+log = logging.get_logger(__name__)
 
 
 @pyblish.api.log
@@ -76,7 +76,16 @@ class CollectNukeReads(pyblish.api.ContextPlugin):
 
             self.log.debug("collected_frames: {}".format(label))
 
-            instance.data["files"] = [source_files]
+            if "representations" not in instance.data:
+                instance.data["representations"] = []
+
+            representation = {
+                'name': ext,
+                'ext': "." + ext,
+                'files': source_files,
+                "stagingDir": source_dir,
+            }
+            instance.data["representations"].append(representation)
 
             transfer = False
             if "publish" in node.knobs():
@@ -90,8 +99,8 @@ class CollectNukeReads(pyblish.api.ContextPlugin):
                 "stagingDir": source_dir,
                 "ext": ext,
                 "label": label,
-                "startFrame": first_frame,
-                "endFrame": last_frame,
+                "frameStart": first_frame,
+                "frameEnd": last_frame,
                 "colorspace": node["colorspace"].value(),
                 "handles": int(asset_data["data"].get("handles", 0)),
                 "step": 1,

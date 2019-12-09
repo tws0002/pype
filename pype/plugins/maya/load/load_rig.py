@@ -2,6 +2,8 @@ from maya import cmds
 
 import pype.maya.plugin
 from avalon import api, maya
+import os
+from pypeapp import config
 
 
 class RigLoader(pype.maya.plugin.ReferenceLoader):
@@ -21,19 +23,42 @@ class RigLoader(pype.maya.plugin.ReferenceLoader):
 
     def process_reference(self, context, name, namespace, data):
 
+        try:
+            family = context["representation"]["context"]["family"]
+        except ValueError:
+            family = "rig"
+
+        groupName = "{}:{}".format(namespace, name)
         nodes = cmds.file(self.fname,
                           namespace=namespace,
                           reference=True,
                           returnNewNodes=True,
                           groupReference=True,
-                          groupName="{}:{}".format(namespace, name))
+                          groupName=groupName)
+
+        cmds.xform(groupName, pivots=(0, 0, 0))
+
+        presets = config.get_presets(project=os.environ['AVALON_PROJECT'])
+        colors = presets['plugins']['maya']['load']['colors']
+
+        c = colors.get(family)
+        if c is not None:
+            cmds.setAttr(groupName + ".useOutlinerColor", 1)
+            cmds.setAttr(groupName + ".outlinerColor",
+                         c[0], c[1], c[2])
+
+        shapes = cmds.ls(nodes, shapes=True, long=True)
+        print(shapes)
+
+        newNodes = (list(set(nodes) - set(shapes)))
+        print(newNodes)
 
         # Store for post-process
-        self[:] = nodes
+        self[:] = newNodes
         if data.get("post_process", True):
             self._post_process(name, namespace, context, data)
 
-        return nodes
+        return newNodes
 
     def _post_process(self, name, namespace, context, data):
 

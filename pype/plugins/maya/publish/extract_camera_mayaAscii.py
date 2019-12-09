@@ -88,8 +88,8 @@ class ExtractCameraMayaAscii(pype.api.Extractor):
     def process(self, instance):
 
         # get settings
-        framerange = [instance.data.get("startFrame", 1),
-                      instance.data.get("endFrame", 1)]
+        framerange = [instance.data.get("frameStart", 1),
+                      instance.data.get("frameEnd", 1)]
         handles = instance.data.get("handles", 0)
         step = instance.data.get("step", 1.0)
         bake_to_worldspace = instance.data("bakeToWorldSpace", True)
@@ -168,10 +168,16 @@ class ExtractCameraMayaAscii(pype.api.Extractor):
 
                     massage_ma_file(path)
 
-        if "files" not in instance.data:
-            instance.data["files"] = list()
+        if "representations" not in instance.data:
+            instance.data["representations"] = []
 
-        instance.data["files"].append(filename)
+        representation = {
+            'name': 'ma',
+            'ext': 'ma',
+            'files': filename,
+            "stagingDir": dir_path,
+        }
+        instance.data["representations"].append(representation)
 
         self.log.info("Extracted instance '{0}' to: {1}".format(
             instance.name, path))

@@ -2,14 +2,15 @@ import os
 import logging
 import weakref
 
-from maya import utils, cmds, mel
+from maya import utils, cmds
 
 from avalon import api as avalon, pipeline, maya
 from avalon.maya.pipeline import IS_HEADLESS
+from avalon.tools import workfiles
 from pyblish import api as pyblish
+from pypeapp import config
 
 from ..lib import (
-    update_task_from_path,
     any_outdated
 )
 from . import menu
@@ -107,17 +108,23 @@ def on_init(_):
     # Force load objExport plug-in (requested by artists)
     cmds.loadPlugin("objExport", quiet=True)
 
-    # Force load objExport plug-in (requested by artists)
-    cmds.loadPlugin("spore", quiet=True)
-
     from .customize import (
         override_component_mask_commands,
         override_toolbox_ui
     )
     safe_deferred(override_component_mask_commands)
 
+    launch_workfiles = os.environ.get("WORKFILES_STARTUP")
+
+    if launch_workfiles:
+        safe_deferred(launch_workfiles_app)
+
     if not IS_HEADLESS:
         safe_deferred(override_toolbox_ui)
+
+
+def launch_workfiles_app(*args):
+    workfiles.show(os.environ["AVALON_WORKDIR"])
 
 
 def on_before_save(return_code, _):
@@ -171,7 +178,7 @@ def on_open(_):
 
             # Show outdated pop-up
             def _on_show_inventory():
-                import avalon.tools.cbsceneinventory as tool
+                import avalon.tools.sceneinventory as tool
                 tool.show(parent=parent)
 
             dialog = popup.Popup(parent=parent)

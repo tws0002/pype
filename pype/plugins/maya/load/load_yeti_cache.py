@@ -9,6 +9,7 @@ from maya import cmds
 from avalon import api
 from avalon.maya import lib as avalon_lib, pipeline
 from pype.maya import lib
+from pypeapp import config
 
 
 class YetiCacheLoader(api.Loader):
@@ -23,6 +24,11 @@ class YetiCacheLoader(api.Loader):
 
     def load(self, context, name=None, namespace=None, data=None):
 
+        try:
+            family = context["representation"]["context"]["family"]
+        except ValueError:
+            family = "yeticache"
+
         # Build namespace
         asset = context["asset"]
         if namespace is None:
@@ -33,8 +39,10 @@ class YetiCacheLoader(api.Loader):
             cmds.loadPlugin("pgYetiMaya", quiet=True)
 
         # Get JSON
-        fname, ext = os.path.splitext(self.fname)
-        settings_fname = "{}.fursettings".format(fname)
+        fbase = re.search(r'^(.+)\.(\d+|#+)\.fur', self.fname)
+        if not fbase:
+            raise RuntimeError('Cannot determine fursettings file path')
+        settings_fname = "{}.fursettings".format(fbase.group(1))
         with open(settings_fname, "r") as fp:
             fursettings = json.load(fp)
 
@@ -49,6 +57,15 @@ class YetiCacheLoader(api.Loader):
 
         group_name = "{}:{}".format(namespace, name)
         group_node = cmds.group(nodes, name=group_name)
+
+        presets = config.get_presets(project=os.environ['AVALON_PROJECT'])
+        colors = presets['plugins']['maya']['load']['colors']
+
+        c = colors.get(family)
+        if c is not None:
+            cmds.setAttr(group_name + ".useOutlinerColor", 1)
+            cmds.setAttr(group_name + ".outlinerColor",
+                         c[0], c[1], c[2])
 
         nodes.append(group_node)
 
@@ -87,7 +104,6 @@ class YetiCacheLoader(api.Loader):
         namespace = container["namespace"]
         container_node = container["objectName"]
         path = api.get_representation_path(representation)
-
         # Get all node data
         fname, ext = os.path.splitext(path)
         settings_fname = "{}.fursettings".format(fname)
@@ -136,7 +152,8 @@ class YetiCacheLoader(api.Loader):
             # Update cache file name
             file_name = data["name"].replace(":", "_")
             cache_file_path = "{}.%04d.fur".format(file_name)
-            data["attrs"]["cacheFileName"] = os.path.join(path, cache_file_path)
+            data["attrs"]["cacheFileName"] = os.path.join(
+                path, cache_file_path)
 
             if cb_id not in scene_lookup:
 
@@ -269,10 +286,15 @@ class YetiCacheLoader(api.Loader):
             attributes = node_settings["attrs"]
 
             # Check if cache file name is stored
+
+            # get number of # in path and convert it to C prinf format
+            # like %04d expected by Yeti
+            fbase = re.search(r'^(.+)\.(\d+|#+)\.fur', self.fname)
+            if not fbase:
+                raise RuntimeError('Cannot determine file path')
+            padding = len(fbase.group(2))
             if "cacheFileName" not in attributes:
-                file_name = original_node.replace(":", "_")
-                cache_name = "{}.%04d.fur".format(file_name)
-                cache = os.path.join(self.fname, cache_name)
+                cache = "{}.%0{}d.fur".format(fbase.group(1), padding)
 
                 self.validate_cache(cache)
                 attributes["cacheFileName"] = cache

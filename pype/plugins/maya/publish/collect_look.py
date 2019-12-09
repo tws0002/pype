@@ -47,6 +47,8 @@ def get_look_attrs(node):
         for attr in attrs:
             if attr in SHAPE_ATTRS:
                 result.append(attr)
+            elif attr.startswith('ai'):
+                result.append(attr)
 
     return result
 
@@ -209,6 +211,7 @@ class CollectLook(pyblish.api.InstancePlugin):
     families = ["look"]
     label = "Collect Look"
     hosts = ["maya"]
+    maketx = True
 
     def process(self, instance):
         """Collect the Look in the instance with the correct layer settings"""
@@ -217,8 +220,9 @@ class CollectLook(pyblish.api.InstancePlugin):
             self.collect(instance)
 
         # make ftrack publishable
-        instance.data["families"] = ['ftrack']
-        instance.data['maketx'] = True
+        self.maketx = instance.data.get('maketx', True)
+        instance.data['maketx'] = self.maketx
+        self.log.info('maketx: {}'.format(self.maketx))
 
     def collect(self, instance):
 
@@ -387,6 +391,10 @@ class CollectLook(pyblish.api.InstancePlugin):
             # Collect changes to "custom" attributes
             node_attrs = get_look_attrs(node)
 
+            self.log.info(
+                "Node \"{0}\" attributes: {1}".format(node, node_attrs)
+            )
+
             # Only include if there are any properties we care about
             if not node_attrs:
                 continue
@@ -424,6 +432,8 @@ class CollectLook(pyblish.api.InstancePlugin):
             computed_attribute = attribute
         source = cmds.getAttr(attribute)
 
+        color_space_attr = "{}.colorSpace".format(node)
+        color_space = cmds.getAttr(color_space_attr)
         # Compare with the computed file path, e.g. the one with the <UDIM>
         # pattern in it, to generate some logging information about this
         # difference
@@ -449,4 +459,5 @@ class CollectLook(pyblish.api.InstancePlugin):
         return {"node": node,
                 "attribute": attribute,
                 "source": source,  # required for resources
-                "files": files}  # required for resources
+                "files": files,
+                "color_space": color_space}  # required for resources

@@ -9,7 +9,7 @@ import pype.maya.lib as lib
 class CollectMayaRenderlayers(pyblish.api.ContextPlugin):
     """Gather instances by active render layers"""
 
-    order = pyblish.api.CollectorOrder
+    order = pyblish.api.CollectorOrder + 0.01
     hosts = ["maya"]
     label = "Render Layers"
 
@@ -21,11 +21,14 @@ class CollectMayaRenderlayers(pyblish.api.ContextPlugin):
         # Get render globals node
         try:
             render_globals = cmds.ls("renderglobalsMain")[0]
+            for instance in context:
+                self.log.debug(instance.name)
+                if instance.data['family'] == 'workfile':
+                    instance.data['publish'] = True
         except IndexError:
             self.log.info("Skipping renderlayer collection, no "
                           "renderGlobalsDefault found..")
             return
-
         # Get all valid renderlayers
         # This is how Maya populates the renderlayer display
         rlm_attribute = "renderLayerManager.renderLayerId"
@@ -51,7 +54,7 @@ class CollectMayaRenderlayers(pyblish.api.ContextPlugin):
                 continue
 
             if layer.endswith("defaultRenderLayer"):
-                layername = "masterLayer"
+                continue
             else:
                 # Remove Maya render setup prefix `rs_`
                 layername = layer.split("rs_", 1)[-1]
@@ -61,9 +64,9 @@ class CollectMayaRenderlayers(pyblish.api.ContextPlugin):
                 "subset": layername,
                 "setMembers": layer,
                 "publish": True,
-                "startFrame": self.get_render_attribute("startFrame",
+                "frameStart": self.get_render_attribute("startFrame",
                                                         layer=layer),
-                "endFrame": self.get_render_attribute("endFrame",
+                "frameEnd": self.get_render_attribute("endFrame",
                                                       layer=layer),
                 "byFrameStep": self.get_render_attribute("byFrameStep",
                                                          layer=layer),
@@ -103,8 +106,8 @@ class CollectMayaRenderlayers(pyblish.api.ContextPlugin):
 
             # Define nice label
             label = "{0} ({1})".format(layername, data["asset"])
-            label += "  [{0}-{1}]".format(int(data["startFrame"]),
-                                          int(data["endFrame"]))
+            label += "  [{0}-{1}]".format(int(data["frameStart"]),
+                                          int(data["frameEnd"]))
 
             instance = context.create_instance(layername)
             instance.data["label"] = label
@@ -179,9 +182,11 @@ class CollectMayaRenderlayers(pyblish.api.ContextPlugin):
         pool_b = None
 
         # Check for specific pools
+        pool_b = []
         if "primaryPool" in attributes:
             pool_a = attributes["primaryPool"]
-            pool_b = attributes["secondaryPool"]
+            if "secondaryPool" in attributes:
+                pool_b = attributes["secondaryPool"]
 
         else:
             # Backwards compatibility

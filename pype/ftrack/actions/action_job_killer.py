@@ -1,10 +1,10 @@
-# :coding: utf-8
-# :copyright: Copyright (c) 2017 ftrack
+import os
 import sys
 import argparse
 import logging
+import json
 
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseAction
 
 
@@ -14,14 +14,14 @@ class JobKiller(BaseAction):
     #: Action identifier.
     identifier = 'job.killer'
     #: Action label.
-    label = 'Job Killer'
+    label = "Pype Admin"
+    variant = '- Job Killer'
     #: Action description.
     description = 'Killing selected running jobs'
     #: roles that are allowed to register this action
     role_list = ['Pypeclub', 'Administrator']
-    icon = (
-        'https://cdn2.iconfinder.com/data/icons/new-year-resolutions/64/'
-        'resolutions-23-512.png'
+    icon = '{}/ftrack/action_icons/PypeAdmin.svg'.format(
+        os.environ.get('PYPE_STATICS_SERVER', '')
     )
 
     def discover(self, session, entities, event):
@@ -39,14 +39,18 @@ class JobKiller(BaseAction):
             ).all()
 
             items = []
-            import json
+
             item_splitter = {'type': 'label', 'value': '---'}
             for job in jobs:
-                data = json.loads(job['data'])
+                try:
+                    data = json.loads(job['data'])
+                    desctiption = data['description']
+                except Exception:
+                    desctiption = '*No description*'
                 user = job['user']['username']
                 created = job['created_at'].strftime('%d.%m.%Y %H:%M:%S')
                 label = '{} - {} - {}'.format(
-                    data['description'], created, user
+                    desctiption, created, user
                 )
                 item_label = {
                     'type': 'label',
@@ -97,13 +101,14 @@ class JobKiller(BaseAction):
         # Update all the queried jobs, setting the status to failed.
         for job in jobs:
             try:
+                origin_status = job["status"]
                 job['status'] = 'failed'
                 session.commit()
                 self.log.debug((
                     'Changing Job ({}) status: {} -> failed'
-                ).format(job['id'], job['status']))
+                ).format(job['id'], origin_status))
             except Exception:
-                self.warning.debug((
+                self.log.warning((
                     'Changing Job ({}) has failed'
                 ).format(job['id']))
 
@@ -114,16 +119,10 @@ class JobKiller(BaseAction):
         }
 
 
-def register(session, **kw):
+def register(session, plugins_presets={}):
     '''Register plugin. Called when used as an plugin.'''
 
-    # Validate that session is an instance of ftrack_api.Session. If not,
-    # assume that register is being called from an old or incompatible API and
-    # return without doing anything.
-    if not isinstance(session, ftrack_api.session.Session):
-        return
-
-    JobKiller(session).register()
+    JobKiller(session, plugins_presets).register()
 
 
 def main(arguments=None):

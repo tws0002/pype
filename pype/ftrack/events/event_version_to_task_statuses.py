@@ -1,4 +1,4 @@
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseEvent
 
 
@@ -13,7 +13,7 @@ class VersionToTaskStatus(BaseEvent):
             # Filter non-assetversions
             if (
                 entity['entityType'] == 'assetversion' and
-                'statusid' in entity.get('keys', [])
+                'statusid' in (entity.get('keys') or [])
             ):
 
                 version = session.get('AssetVersion', entity['entityId'])
@@ -69,9 +69,7 @@ class VersionToTaskStatus(BaseEvent):
                             path, task_status['name']))
 
 
-def register(session, **kw):
+def register(session, plugins_presets):
     '''Register plugin. Called when used as an plugin.'''
-    if not isinstance(session, ftrack_api.session.Session):
-        return
 
-    VersionToTaskStatus(session).register()
+    VersionToTaskStatus(session, plugins_presets).register()

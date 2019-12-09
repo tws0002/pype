@@ -1,22 +1,20 @@
+import os
 import sys
 import argparse
 import logging
 import collections
-import os
 import json
 import re
 
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseAction
 from avalon import io, inventory, schema
-
-
-ignore_me = True
 
 
 class TestAction(BaseAction):
     '''Edit meta data action.'''
 
+    ignore_me = True
     #: Action identifier.
     identifier = 'test.action'
     #: Action label.
@@ -27,9 +25,8 @@ class TestAction(BaseAction):
     priority = 10000
     #: roles that are allowed to register this action
     role_list = ['Pypeclub']
-    icon = (
-        'https://cdn4.iconfinder.com/data/icons/hospital-19/512/'
-        '8_hospital-512.png'
+    icon = '{}/ftrack/action_icons/TestAction.svg'.format(
+        os.environ.get('PYPE_STATICS_SERVER', '')
     )
 
     def discover(self, session, entities, event):
@@ -43,13 +40,10 @@ class TestAction(BaseAction):
         return True
 
 
-def register(session, **kw):
+def register(session, plugins_presets={}):
     '''Register plugin. Called when used as an plugin.'''
 
-    if not isinstance(session, ftrack_api.session.Session):
-        return
-
-    TestAction(session).register()
+    TestAction(session, plugins_presets).register()
 
 
 def main(arguments=None):

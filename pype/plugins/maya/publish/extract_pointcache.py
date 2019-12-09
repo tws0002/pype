@@ -25,8 +25,8 @@ class ExtractAlembic(pype.api.Extractor):
         nodes = instance[:]
 
         # Collect the start and end including handles
-        start = instance.data.get("startFrame", 1)
-        end = instance.data.get("endFrame", 1)
+        start = instance.data.get("frameStart", 1)
+        end = instance.data.get("frameEnd", 1)
         handles = instance.data.get("handles", 0)
         if handles:
             start -= handles
@@ -79,9 +79,15 @@ class ExtractAlembic(pype.api.Extractor):
                                 endFrame=end,
                                 **options)
 
-        if "files" not in instance.data:
-            instance.data["files"] = list()
+        if "representations" not in instance.data:
+            instance.data["representations"] = []
 
-        instance.data["files"].append(filename)
+        representation = {
+            'name': 'abc',
+            'ext': 'abc',
+            'files': filename,
+            "stagingDir": dirname
+        }
+        instance.data["representations"].append(representation)
 
         self.log.info("Extracted {} to {}".format(instance, dirname))

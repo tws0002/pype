@@ -1,15 +1,13 @@
 import os
 import sys
 import re
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseEvent
-from app import api
-
-
-ignore_me = True
 
 
 class Test_Event(BaseEvent):
+
+    ignore_me = True
 
     priority = 10000
 
@@ -22,9 +20,7 @@ class Test_Event(BaseEvent):
         return True
 
 
-def register(session, **kw):
+def register(session, plugins_presets):
     '''Register plugin. Called when used as an plugin.'''
-    if not isinstance(session, ftrack_api.session.Session):
-        return
 
-    Test_Event(session).register()
+    Test_Event(session, plugins_presets).register()

@@ -1,140 +1,130 @@
-import os
 import sys
-import tempfile
-import pico
-# from pico.decorators import request_args, prehandle
-from pico import PicoApp
-from pico import client
+import os
+import getpass
 
-from avalon import api as avalon
-from avalon import io
-
-import pyblish.api as pyblish
-
-from app.api import forward
-from pype import api as pype
-
-# remove all Handlers created by pico
-for name, handler in [(handler.get_name(), handler)
-                      for handler in pype.Logger.logging.root.handlers[:]]:
-    if "pype" not in str(name).lower():
-        pype.Logger.logging.root.removeHandler(handler)
-
-log = pype.Logger.getLogger(__name__, "aport")
+from app.api import Logger
+from io_nonsingleton import DbConnector
 
 
-SESSION = avalon.session
-if not SESSION:
-    io.install()
+io = DbConnector()
+log = Logger.getLogger(__name__, "aport")
+
+self = sys.modules[__name__]
+self.SESSION = None
+self._registered_root = {"_": ""}
+self.AVALON_PROJECT = os.getenv("AVALON_PROJECT", None)
+self.AVALON_ASSET = os.getenv("AVALON_ASSET", None)
+self.AVALON_TASK = os.getenv("AVALON_TASK", None)
+self.AVALON_SILO = os.getenv("AVALON_SILO", None)
 
 
-@pico.expose()
-def publish(json_data_path, staging_dir=None):
-    """
-    Runs standalone pyblish and adds link to
-    data in external json file
+def get_session():
+    if not self.SESSION:
+        io.install()
+        self.SESSION = io.Session
 
-    It is necessary to run `register_plugin_path` if particular
-    host is needed
+        # for k, v in os.environ.items():
+        #     if 'AVALON' in k:
+        #         print(str((k, v)))
+
+    return self.SESSION
+
+
+def update_current_task(task=None, asset=None, app=None):
+    """Update active Session to a new task work area.
+
+    This updates the live Session to a different `asset`, `task` or `app`.
 
     Args:
-        json_data_path (string): path to temp json file with
-                                context data
-        staging_dir (strign, optional): path to temp directory
+        task (str): The task to set.
+        asset (str): The asset to set.
+        app (str): The app to set.
 
     Returns:
-        dict: return_json_path
-
-    Raises:
-        Exception: description
+        dict: The changed key, values in the current Session.
 
     """
-    staging_dir = staging_dir \
-        or tempfile.mkdtemp(prefix="pype_aport_")
 
-    return_json_path = os.path.join(staging_dir, "return_data.json")
+    mapping = {
+        "AVALON_ASSET": asset,
+        "AVALON_TASK": task,
+        "AVALON_APP": app,
+    }
+    changed = {key: value for key, value in mapping.items() if value}
+    if not changed:
+        return
 
-    log.debug("avalon.session is: \n{}".format(SESSION))
-    pype_start = os.path.join(os.getenv('PYPE_SETUP_ROOT'),
-                              "app", "pype-start.py")
+    # Update silo when asset changed
+    if "AVALON_ASSET" in changed:
+        asset_document = io.find_one({"name": changed["AVALON_ASSET"],
+                                      "type": "asset"})
+        assert asset_document, "Asset must exist"
+        silo = asset_document["silo"]
+        if silo is None:
+            silo = asset_document["name"]
+        changed["AVALON_SILO"] = silo
+        parents = asset_document['data']['parents']
+        hierarchy = ""
+        if len(parents) > 0:
+            hierarchy = os.path.sep.join(parents)
+        changed['AVALON_HIERARCHY'] = hierarchy
 
-    args = [pype_start, "--publish",
-            "-pp", os.environ["PUBLISH_PATH"],
-            "-d", "rqst_json_data_path", json_data_path,
-            "-d", "post_json_data_path", return_json_path
-            ]
+    # Compute work directory (with the temporary changed session so far)
+    project = io.find_one({"type": "project"},
+                          projection={"config.template.work": True})
+    template = project["config"]["template"]["work"]
+    _session = self.SESSION.copy()
+    _session.update(changed)
+    changed["AVALON_WORKDIR"] = _format_work_template(template, _session)
 
-    log.debug(args)
+    # Update the full session in one go to avoid half updates
+    self.SESSION.update(changed)
 
-    # start standalone pyblish qml
-    forward([
-        sys.executable, "-u"
-    ] + args,
-        cwd=os.getenv('AVALON_WORKDIR').replace("\\", "/")
+    # Update the environment
+    os.environ.update(changed)
+
+    return changed
+
+
+def _format_work_template(template, session=None):
+    """Return a formatted configuration template with a Session.
+
+    Note: This *cannot* format the templates for published files since the
+        session does not hold the context for a published file. Instead use
+        `get_representation_path` to parse the full path to a published file.
+
+    Args:
+        template (str): The template to format.
+        session (dict, Optional): The Session to use. If not provided use the
+            currently active global Session.
+
+    Returns:
+        str: The fully formatted path.
+
+    """
+    if session is None:
+        session = self.SESSION
+
+    project = io.find_one({'type': 'project'})
+
+    return template.format(**{
+        "root": registered_root(),
+        "project": {
+            "name": project.get("name", session["AVALON_PROJECT"]),
+            "code": project["data"].get("code", ''),
+        },
+        "silo": session["AVALON_SILO"],
+        "hierarchy": session['AVALON_HIERARCHY'],
+        "asset": session["AVALON_ASSET"],
+        "task": session["AVALON_TASK"],
+        "app": session["AVALON_APP"],
+        "user": session.get("AVALON_USER", getpass.getuser())
+    })
+
+
+def registered_root():
+    """Return currently registered root"""
+    return os.path.normpath(
+        self._registered_root["_"]
+        or self.SESSION.get("AVALON_PROJECTS") or ""
     )
-
-    return {"return_json_path": return_json_path}
-
-
-@pico.expose()
-def context(project, asset, task, app):
-    # http://localhost:4242/pipeline/context?project=this&asset=shot01&task=comp
-
-    os.environ["AVALON_PROJECT"] = project
-
-    avalon.update_current_task(task, asset, app)
-
-    project_code = pype.get_project_code()
-    pype.set_project_code(project_code)
-    hierarchy = pype.get_hierarchy()
-    pype.set_hierarchy(hierarchy)
-    fix_paths = {k: v.replace("\\", "/") for k, v in SESSION.items()
-                 if isinstance(v, str)}
-    SESSION.update(fix_paths)
-    SESSION.update({"AVALON_HIERARCHY": hierarchy,
-                    "AVALON_PROJECTCODE": project_code,
-                    "current_dir": os.getcwd().replace("\\", "/")
-                    })
-
-    return SESSION
-
-
-@pico.expose()
-def deregister_plugin_path():
-    if os.getenv("PUBLISH_PATH", None):
-        aport_plugin_path = [p.replace("\\", "/") for p in os.environ["PUBLISH_PATH"].split(
-            os.pathsep) if "aport" in p][0]
-        os.environ["PUBLISH_PATH"] = aport_plugin_path
-    else:
-        log.warning("deregister_plugin_path(): No PUBLISH_PATH is registred")
-
-    return "Publish path deregistered"
-
-
-@pico.expose()
-def register_plugin_path(publish_path):
-    deregister_plugin_path()
-    if os.getenv("PUBLISH_PATH", None):
-        os.environ["PUBLISH_PATH"] = os.pathsep.join(
-            os.environ["PUBLISH_PATH"].split(os.pathsep) +
-            [publish_path.replace("\\", "/")]
-        )
-    else:
-        os.environ["PUBLISH_PATH"] = publish_path
-
-    log.info(os.environ["PUBLISH_PATH"].split(os.pathsep))
-
-    return "Publish registered paths: {}".format(
-        os.environ["PUBLISH_PATH"].split(os.pathsep)
-    )
-
-
-@pico.expose()
-def nuke_test():
-    import nuke
-    n = nuke.createNode("Constant")
-    log.info(n)
-
-
-app = PicoApp()
-app.register_module(__name__)

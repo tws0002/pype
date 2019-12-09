@@ -1,17 +1,14 @@
 import os
 import sys
-import re
 import json
 import logging
 import subprocess
 from operator import itemgetter
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseAction
-from app.api import Logger
-from pype import pypelib
+from pypeapp import Logger, config
 
-
-log = Logger.getLogger(__name__)
+log = Logger().get_logger(__name__)
 
 
 class DJVViewAction(BaseAction):
@@ -19,16 +16,17 @@ class DJVViewAction(BaseAction):
     identifier = "djvview-launch-action"
     label = "DJV View"
     description = "DJV View Launcher"
-    icon = "http://a.fsdn.com/allura/p/djv/icon"
+    icon = '{}/app_icons/djvView.png'.format(
+        os.environ.get('PYPE_STATICS_SERVER', '')
+    )
     type = 'Application'
 
-    def __init__(self, session):
+    def __init__(self, session, plugins_presets):
         '''Expects a ftrack_api.Session instance'''
-        super().__init__(session)
+        super().__init__(session, plugins_presets)
         self.djv_path = None
-        self.config_data = None
 
-        self.load_config_data()
+        self.config_data = config.get_presets()['djv_view']['config']
         self.set_djv_path()
 
         if self.djv_path is None:
@@ -55,21 +53,6 @@ class DJVViewAction(BaseAction):
         if entityType in ["assetversion", "task"]:
             return True
         return False
-
-    def load_config_data(self):
-        path_items = [pypelib.get_presets_path(), 'djv_view', 'config.json']
-        filepath = os.path.sep.join(path_items)
-
-        data = dict()
-        try:
-            with open(filepath) as data_file:
-                data = json.load(data_file)
-        except Exception as e:
-            log.warning(
-                'Failed to load data from DJV presets file ({})'.format(e)
-            )
-
-        self.config_data = data
 
     def set_djv_path(self):
         for path in self.config_data.get("djv_paths", []):
@@ -234,12 +217,11 @@ class DJVViewAction(BaseAction):
 
         return True
 
-def register(session):
-    """Register hooks."""
-    if not isinstance(session, ftrack_api.session.Session):
-        return
 
-    DJVViewAction(session).register()
+def register(session, plugins_presets={}):
+    """Register hooks."""
+
+    DJVViewAction(session, plugins_presets).register()
 
 
 def main(arguments=None):

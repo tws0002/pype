@@ -1,7 +1,7 @@
 from avalon import api
 import pype.maya.plugin
 import os
-import pymel.core as pm
+from pypeapp import config
 
 
 class AssProxyLoader(pype.maya.plugin.ReferenceLoader):
@@ -21,6 +21,11 @@ class AssProxyLoader(pype.maya.plugin.ReferenceLoader):
         from avalon import maya
         import pymel.core as pm
 
+        try:
+            family = context["representation"]["context"]["family"]
+        except ValueError:
+            family = "ass"
+
         with maya.maintained_selection():
 
             groupName = "{}:{}".format(namespace, name)
@@ -34,7 +39,8 @@ class AssProxyLoader(pype.maya.plugin.ReferenceLoader):
                               groupReference=True,
                               groupName=groupName)
 
-            cmds.makeIdentity(groupName, apply=False, rotate=True, translate=True, scale=True)
+            cmds.makeIdentity(groupName, apply=False, rotate=True,
+                              translate=True, scale=True)
 
             # Set attributes
             proxyShape = pm.ls(nodes, type="mesh")[0]
@@ -43,6 +49,14 @@ class AssProxyLoader(pype.maya.plugin.ReferenceLoader):
             proxyShape.dso.set(path)
             proxyShape.aiOverrideShaders.set(0)
 
+            presets = config.get_presets(project=os.environ['AVALON_PROJECT'])
+            colors = presets['plugins']['maya']['load']['colors']
+
+            c = colors.get(family)
+            if c is not None:
+                cmds.setAttr(groupName + ".useOutlinerColor", 1)
+                cmds.setAttr(groupName + ".outlinerColor",
+                             c[0], c[1], c[2])
 
         self[:] = nodes
 
@@ -55,6 +69,7 @@ class AssProxyLoader(pype.maya.plugin.ReferenceLoader):
 
         import os
         from maya import cmds
+        import pymel.core as pm
 
         node = container["objectName"]
 
@@ -132,7 +147,6 @@ class AssStandinLoader(api.Loader):
         import mtoa.ui.arnoldmenu
         import pymel.core as pm
 
-
         asset = context['asset']['name']
         namespace = namespace or lib.unique_namespace(
             asset + "_",
@@ -145,6 +159,15 @@ class AssStandinLoader(api.Loader):
         # Root group
         label = "{}:{}".format(namespace, name)
         root = pm.group(name=label, empty=True)
+
+        presets = config.get_presets(project=os.environ['AVALON_PROJECT'])
+        colors = presets['plugins']['maya']['load']['colors']
+
+        c = colors.get('ass')
+        if c is not None:
+            cmds.setAttr(root + ".useOutlinerColor", 1)
+            cmds.setAttr(root + ".outlinerColor",
+                         c[0], c[1], c[2])
 
         # Create transform with shape
         transform_name = label + "_ASS"

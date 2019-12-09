@@ -25,11 +25,16 @@ class VraySubmitDeadline(pyblish.api.InstancePlugin):
     order = pyblish.api.IntegratorOrder
     hosts = ["maya"]
     families = ["vrayscene"]
+    if not os.environ.get("DEADLINE_REST_URL"):
+        optional = False
+        active = False
+    else:
+        optional = True
 
     def process(self, instance):
 
         DEADLINE_REST_URL = api.Session.get("DEADLINE_REST_URL",
-                                          "http://localhost:8082")
+                                            "http://localhost:8082")
         assert DEADLINE_REST_URL, "Requires DEADLINE_REST_URL"
 
         context = instance.context
@@ -51,8 +56,8 @@ class VraySubmitDeadline(pyblish.api.InstancePlugin):
                                                  filename,
                                                  vrscene_output)
 
-        start_frame = int(instance.data["startFrame"])
-        end_frame = int(instance.data["endFrame"])
+        start_frame = int(instance.data["frameStart"])
+        end_frame = int(instance.data["frameEnd"])
 
         # Primary job
         self.log.info("Submitting export job ..")
@@ -109,7 +114,7 @@ class VraySubmitDeadline(pyblish.api.InstancePlugin):
 
         self.log.info("Job Data:\n{}".format(json.dumps(payload)))
 
-        response = requests.post(url=deadline_url, json=payload)
+        response = self._requests_post(url=deadline_url, json=payload)
         if not response.ok:
             raise RuntimeError(response.text)
 
@@ -123,8 +128,8 @@ class VraySubmitDeadline(pyblish.api.InstancePlugin):
 
         self.log.info("Submitting render job ..")
 
-        start_frame = int(instance.data["startFrame"])
-        end_frame = int(instance.data["endFrame"])
+        start_frame = int(instance.data["frameStart"])
+        end_frame = int(instance.data["frameEnd"])
         ext = instance.data.get("ext",  "exr")
 
         # Create output directory for renders
@@ -188,7 +193,7 @@ class VraySubmitDeadline(pyblish.api.InstancePlugin):
         self.log.info(json.dumps(payload_b))
 
         # Post job to deadline
-        response_b = requests.post(url=deadline_url, json=payload_b)
+        response_b = self._requests_post(url=deadline_url, json=payload_b)
         if not response_b.ok:
             raise RuntimeError(response_b.text)
 
@@ -215,8 +220,8 @@ class VraySubmitDeadline(pyblish.api.InstancePlugin):
 
         return cmd.format(project=instance.context.data["workspaceDir"],
                           cam=cammera,
-                          startFrame=instance.data["startFrame"],
-                          endFrame=instance.data["endFrame"],
+                          startFrame=instance.data["frameStart"],
+                          endFrame=instance.data["frameEnd"],
                           layer=instance.name)
 
     def build_jobinfo_environment(self, env):
@@ -266,9 +271,23 @@ class VraySubmitDeadline(pyblish.api.InstancePlugin):
         if dir:
             return output_path.replace("\\", "/")
 
-        start_frame = int(instance.data["startFrame"])
+        start_frame = int(instance.data["frameStart"])
         filename_zero = "{}_{:04d}.vrscene".format(output_path, start_frame)
 
         result = filename_zero.replace("\\", "/")
 
         return result
+
+    def _requests_post(self, *args, **kwargs):
+        """ Wrapper for requests, disabling SSL certificate validation if
+            DONT_VERIFY_SSL environment variable is found. This is useful when
+            Deadline or Muster server are running with self-signed certificates
+            and their certificate is not added to trusted certificates on
+            client machines.
+
+            WARNING: disabling SSL certificate validation is defeating one line
+            of defense SSL is providing and it is not recommended.
+        """
+        if 'verify' not in kwargs:
+            kwargs['verify'] = False if os.getenv("PYPE_DONT_VERIFY_SSL", True) else True  # noqa
+        return requests.post(*args, **kwargs)

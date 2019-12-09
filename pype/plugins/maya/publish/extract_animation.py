@@ -35,8 +35,8 @@ class ExtractAnimation(pype.api.Extractor):
                                            fullPath=True) or []
 
         # Collect the start and end including handles
-        start = instance.data["startFrame"]
-        end = instance.data["endFrame"]
+        start = instance.data["frameStart"]
+        end = instance.data["frameEnd"]
         handles = instance.data.get("handles", 0)
         if handles:
             start -= handles
@@ -77,9 +77,15 @@ class ExtractAnimation(pype.api.Extractor):
                                 endFrame=end,
                                 **options)
 
-        if "files" not in instance.data:
-            instance.data["files"] = list()
+        if "representations" not in instance.data:
+            instance.data["representations"] = []
 
-        instance.data["files"].append(filename)
+        representation = {
+            'name': 'abc',
+            'ext': 'abc',
+            'files': filename,
+            "stagingDir": dirname,
+        }
+        instance.data["representations"].append(representation)
 
         self.log.info("Extracted {} to {}".format(instance, dirname))

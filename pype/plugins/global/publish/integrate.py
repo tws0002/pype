@@ -24,25 +24,7 @@ class IntegrateAsset(pyblish.api.InstancePlugin):
 
     label = "Integrate Asset"
     order = pyblish.api.IntegratorOrder
-    families = ["animation",
-                "camera",
-                "look",
-                "mayaAscii",
-                "model",
-                "pointcache",
-                "vdbcache",
-                "setdress",
-                "assembly",
-                "layout",
-                "rig",
-                "vrayproxy",
-                "yetiRig",
-                "yeticache",
-                "nukescript",
-                "review",
-                "workfile",
-                "scene",
-                "ass"]
+    families = ["assembly"]
     exclude_families = ["clip"]
 
     def process(self, instance):
@@ -53,7 +35,8 @@ class IntegrateAsset(pyblish.api.InstancePlugin):
         self.register(instance)
 
         self.log.info("Integrating Asset in to the database ...")
-        self.integrate(instance)
+        if instance.data.get('transfer', True):
+            self.integrate(instance)
 
     def register(self, instance):
         # Required environment variables
@@ -171,7 +154,7 @@ class IntegrateAsset(pyblish.api.InstancePlugin):
                          "version": int(version["name"]),
                          "hierarchy": hierarchy}
 
-        template_publish = project["config"]["template"]["publish"]
+        # template_publish = project["config"]["template"]["publish"]
         anatomy = instance.context.data['anatomy']
 
         # Find the representations to transfer amongst the files
@@ -210,10 +193,10 @@ class IntegrateAsset(pyblish.api.InstancePlugin):
 
                     src = os.path.join(stagingdir, fname)
                     anatomy_filled = anatomy.format(template_data)
-                    dst = anatomy_filled.publish.path
+                    dst = anatomy_filled["publish"]["path"]
 
                     instance.data["transfers"].append([src, dst])
-                    template = anatomy.publish.path
+                    template = anatomy.templates["publish"]["path"]
 
             else:
                 # Single file
@@ -234,10 +217,10 @@ class IntegrateAsset(pyblish.api.InstancePlugin):
 
                 src = os.path.join(stagingdir, fname)
                 anatomy_filled = anatomy.format(template_data)
-                dst = anatomy_filled.publish.path
+                dst = anatomy_filled["publish"]["path"]
 
                 instance.data["transfers"].append([src, dst])
-                template = anatomy.publish.path
+                template = anatomy.templates["publish"]["path"]
 
             representation = {
                 "schema": "pype:representation-2.0",
@@ -417,7 +400,7 @@ class IntegrateAsset(pyblish.api.InstancePlugin):
 
         # Include optional data if present in
         optionals = [
-            "startFrame", "endFrame", "step", "handles", "sourceHashes"
+            "frameStart", "frameEnd", "step", "handles", "sourceHashes"
         ]
         for key in optionals:
             if key in instance.data:

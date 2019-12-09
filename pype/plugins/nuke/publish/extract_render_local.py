@@ -17,34 +17,28 @@ class NukeRenderLocal(pype.api.Extractor):
     order = pyblish.api.ExtractorOrder
     label = "Render Local"
     hosts = ["nuke"]
-    families = ["render.local", "prerender.local", "still.local"]
+    families = ["render.local"]
 
     def process(self, instance):
-        node = instance[0]
-        # This should be a ContextPlugin, but this is a workaround
-        # for a bug in pyblish to run once for a family: issue #250
-        context = instance.context
-        key = "__hasRun{}".format(self.__class__.__name__)
-        if context.data.get(key, False):
-            return
-        else:
-            context.data[key] = True
+        node = None
+        for x in instance:
+            if x.Class() == "Write":
+                node = x
 
         self.log.debug("instance collected: {}".format(instance.data))
 
-        first_frame = instance.data.get("startFrame", None)
-        last_frame = instance.data.get("endFrame", None)
+        first_frame = instance.data.get("frameStart", None)
+        last_frame = instance.data.get("frameEnd", None)
         node_subset_name = instance.data.get("name", None)
-
-        # swap path to stageDir
-        temp_dir = self.staging_dir(instance).replace("\\", "/")
-        output_dir = instance.data.get("outputDir")
-        path = node['file'].value()
-        node['file'].setValue(path.replace(output_dir, temp_dir))
 
         self.log.info("Starting render")
         self.log.info("Start frame: {}".format(first_frame))
         self.log.info("End frame: {}".format(last_frame))
+
+        # Ensure output directory exists.
+        directory = os.path.dirname(node["file"].value())
+        if not os.path.exists(directory):
+            os.makedirs(directory)
 
         # Render frames
         nuke.execute(
@@ -53,25 +47,38 @@ class NukeRenderLocal(pype.api.Extractor):
             int(last_frame)
         )
 
-        # swap path back to publish path
         path = node['file'].value()
-        node['file'].setValue(path.replace(temp_dir, output_dir))
+        out_dir = os.path.dirname(path)
+        ext = node["file_type"].value()
 
-        if "files" not in instance.data:
-            instance.data["files"] = list()
+        if "representations" not in instance.data:
+            instance.data["representations"] = []
 
-        instance.data["files"] = [os.listdir(temp_dir)]
+        collected_frames = os.listdir(out_dir)
+        repre = {
+            'name': ext,
+            'ext': ext,
+            'frameStart': "%0{}d".format(len(str(last_frame))) % first_frame,
+            'files': collected_frames,
+            "stagingDir": out_dir,
+            "anatomy_template": "render"
+        }
+        instance.data["representations"].append(repre)
 
         self.log.info("Extracted instance '{0}' to: {1}".format(
             instance.name,
-            output_dir
+            out_dir
         ))
 
-        collections, remainder = clique.assemble(*instance.data['files'])
+        instance.data['family'] = 'render'
+        instance.data['families'].append('render')
+
+        collections, remainder = clique.assemble(collected_frames)
         self.log.info('collections: {}'.format(str(collections)))
 
-        collection = collections[0]
-        instance.data['collection'] = collection
+        if collections:
+            collection = collections[0]
+            instance.data['collection'] = collection
 
         self.log.info('Finished render')
         return

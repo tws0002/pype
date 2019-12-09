@@ -1,4 +1,4 @@
-import ftrack_api
+from pype.vendor import ftrack_api
 from pype.ftrack import BaseEvent, get_ca_mongoid
 from pype.ftrack.events.event_sync_to_avalon import Sync_to_Avalon
 
@@ -51,9 +51,7 @@ class DelAvalonIdFromNew(BaseEvent):
                 continue
 
 
-def register(session, **kw):
+def register(session, plugins_presets):
     '''Register plugin. Called when used as an plugin.'''
-    if not isinstance(session, ftrack_api.session.Session):
-        return
 
-    DelAvalonIdFromNew(session).register()
+    DelAvalonIdFromNew(session, plugins_presets).register()

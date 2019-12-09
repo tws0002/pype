@@ -51,7 +51,7 @@ def get_renderer_variables(renderlayer=None):
         # returns an index number.
         filename_base = os.path.basename(filename_0)
         extension = os.path.splitext(filename_base)[-1].strip(".")
-        filename_prefix = "<Scene>/<RenderLayer>/<RenderLayer>"
+        filename_prefix = cmds.getAttr("defaultRenderGlobals.imageFilePrefix")
 
     return {"ext": extension,
             "filename_prefix": filename_prefix,
@@ -77,8 +77,19 @@ def preview_fname(folder, scene, layer, padding, ext):
 
     """
 
-    # Following hardcoded "<Scene>/<Scene>_<Layer>/<Layer>"
-    output = "{scene}/{layer}/{layer}.{number}.{ext}".format(
+    fileprefix = cmds.getAttr("defaultRenderGlobals.imageFilePrefix")
+    output = fileprefix + ".{number}.{ext}"
+    # RenderPass is currently hardcoded to "beauty" because its not important
+    # for the deadline submission, but we will need something to replace
+    # "<RenderPass>".
+    mapping = {
+        "<Scene>": "{scene}",
+        "<RenderLayer>": "{layer}",
+        "RenderPass": "beauty"
+    }
+    for key, value in mapping.items():
+        output = output.replace(key, value)
+    output = output.format(
         scene=scene,
         layer=layer,
         number="#" * padding,
@@ -100,12 +111,16 @@ class MayaSubmitDeadline(pyblish.api.InstancePlugin):
     order = pyblish.api.IntegratorOrder + 0.1
     hosts = ["maya"]
     families = ["renderlayer"]
-    optional = True
+    if not os.environ.get("DEADLINE_REST_URL"):
+        optional = False
+        active = False
+    else:
+        optional = True
 
     def process(self, instance):
 
         DEADLINE_REST_URL = os.environ.get("DEADLINE_REST_URL",
-                                          "http://localhost:8082")
+                                           "http://localhost:8082")
         assert DEADLINE_REST_URL, "Requires DEADLINE_REST_URL"
 
         context = instance.context
@@ -171,8 +186,8 @@ class MayaSubmitDeadline(pyblish.api.InstancePlugin):
 
                 "Plugin": instance.data.get("mayaRenderPlugin", "MayaBatch"),
                 "Frames": "{start}-{end}x{step}".format(
-                    start=int(instance.data["startFrame"]),
-                    end=int(instance.data["endFrame"]),
+                    start=int(instance.data["frameStart"]),
+                    end=int(instance.data["frameEnd"]),
                     step=int(instance.data["byFrameStep"]),
                 ),
 
@@ -245,13 +260,13 @@ class MayaSubmitDeadline(pyblish.api.InstancePlugin):
         ]
         environment = dict({key: os.environ[key] for key in keys
                             if key in os.environ}, **api.Session)
-        #self.log.debug("enviro: {}".format(pprint(environment)))
+        # self.log.debug("enviro: {}".format(pprint(environment)))
         for path in os.environ:
             if path.lower().startswith('pype_'):
                 environment[path] = os.environ[path]
 
         environment["PATH"] = os.environ["PATH"]
-        self.log.debug("enviro: {}".format(environment['PYPE_SCRIPTS']))
+        # self.log.debug("enviro: {}".format(environment['PYPE_SCRIPTS']))
         clean_environment = {}
         for key in environment:
             clean_path = ""
@@ -279,8 +294,10 @@ class MayaSubmitDeadline(pyblish.api.InstancePlugin):
             if key == "PYTHONPATH":
                 clean_path = clean_path.replace('python2', 'python3')
             clean_path = clean_path.replace(
-                                            os.path.normpath(environment['PYPE_STUDIO_CORE_MOUNT']),
-                                            os.path.normpath(environment['PYPE_STUDIO_CORE']))
+                                            os.path.normpath(
+                                                environment['PYPE_STUDIO_CORE_MOUNT']),  # noqa
+                                            os.path.normpath(
+                                                environment['PYPE_STUDIO_CORE_PATH']))   # noqa
             clean_environment[key] = clean_path
 
         environment = clean_environment
@@ -306,7 +323,7 @@ class MayaSubmitDeadline(pyblish.api.InstancePlugin):
 
         # E.g. http://192.168.0.1:8082/api/jobs
         url = "{}/api/jobs".format(DEADLINE_REST_URL)
-        response = requests.post(url, json=payload)
+        response = self._requests_post(url, json=payload)
         if not response.ok:
             raise Exception(response.text)
 
@@ -317,7 +334,7 @@ class MayaSubmitDeadline(pyblish.api.InstancePlugin):
     def preflight_check(self, instance):
         """Ensure the startFrame, endFrame and byFrameStep are integers"""
 
-        for key in ("startFrame", "endFrame", "byFrameStep"):
+        for key in ("frameStart", "frameEnd", "byFrameStep"):
             value = instance.data[key]
 
             if int(value) == value:
@@ -327,3 +344,31 @@ class MayaSubmitDeadline(pyblish.api.InstancePlugin):
                 "%f=%d was rounded off to nearest integer"
                 % (value, int(value))
             )
+
+    def _requests_post(self, *args, **kwargs):
+        """ Wrapper for requests, disabling SSL certificate validation if
+            DONT_VERIFY_SSL environment variable is found. This is useful when
+            Deadline or Muster server are running with self-signed certificates
+            and their certificate is not added to trusted certificates on
+            client machines.
+
+            WARNING: disabling SSL certificate validation is defeating one line
+            of defense SSL is providing and it is not recommended.
+        """
+        if 'verify' not in kwargs:
+            kwargs['verify'] = False if os.getenv("PYPE_DONT_VERIFY_SSL", True) else True  # noqa
+        return requests.post(*args, **kwargs)
+
+    def _requests_get(self, *args, **kwargs):
+        """ Wrapper for requests, disabling SSL certificate validation if
+            DONT_VERIFY_SSL environment variable is found. This is useful when
+            Deadline or Muster server are running with self-signed certificates
+            and their certificate is not added to trusted certificates on
+            client machines.
+
+            WARNING: disabling SSL certificate validation is defeating one line
+            of defense SSL is providing and it is not recommended.
+        """
+        if 'verify' not in kwargs:
+            kwargs['verify'] = False if os.getenv("PYPE_DONT_VERIFY_SSL", True) else True  # noqa
+        return requests.get(*args, **kwargs)

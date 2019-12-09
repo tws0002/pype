@@ -1,26 +1,20 @@
 import os
 import sys
-from avalon import api as avalon
-from pyblish import api as pyblish
-
-from .. import api
-
-from pype.nuke import menu
-
-from .lib import (
-    create_write_node
-)
+import logging
 
 import nuke
 
-# removing logger handler created in avalon_core
-for name, handler in [(handler.get_name(), handler)
-                      for handler in api.Logger.logging.root.handlers[:]]:
-    if "pype" not in str(name).lower():
-        api.Logger.logging.root.removeHandler(handler)
+from avalon import api as avalon
+from avalon.tools import workfiles
+from pyblish import api as pyblish
+from pype.nuke import menu
+from pypeapp import Logger
+from . import lib
 
 
-log = api.Logger.getLogger(__name__, "nuke")
+self = sys.modules[__name__]
+self.workfiles_launched = False
+log = Logger().get_logger(__name__, "nuke")
 
 AVALON_CONFIG = os.getenv("AVALON_CONFIG", "pype")
 
@@ -33,11 +27,13 @@ LOAD_PATH = os.path.join(PLUGINS_DIR, "nuke", "load")
 CREATE_PATH = os.path.join(PLUGINS_DIR, "nuke", "create")
 INVENTORY_PATH = os.path.join(PLUGINS_DIR, "nuke", "inventory")
 
-self = sys.modules[__name__]
-self.nLogger = None
+
+# registering pyblish gui regarding settings in presets
+if os.getenv("PYBLISH_GUI", None):
+    pyblish.register_gui(os.getenv("PYBLISH_GUI", None))
 
 
-class NukeHandler(api.Logger.logging.Handler):
+class NukeHandler(logging.Handler):
     '''
     Nuke Handler - emits logs into nuke's script editor.
     warning will emit nuke.warning()
@@ -45,7 +41,7 @@ class NukeHandler(api.Logger.logging.Handler):
     '''
 
     def __init__(self):
-        api.Logger.logging.Handler.__init__(self)
+        logging.Handler.__init__(self)
         self.set_name("Pype_Nuke_Handler")
 
     def emit(self, record):
@@ -58,20 +54,19 @@ class NukeHandler(api.Logger.logging.Handler):
             "fatal",
             "error"
         ]:
+            msg = self.format(record)
             nuke.message(msg)
 
 
 '''Adding Nuke Logging Handler'''
+log.info([handler.get_name() for handler in logging.root.handlers[:]])
 nuke_handler = NukeHandler()
 if nuke_handler.get_name() \
     not in [handler.get_name()
-            for handler in api.Logger.logging.root.handlers[:]]:
-    api.Logger.logging.getLogger().addHandler(nuke_handler)
-    api.Logger.logging.getLogger().setLevel(api.Logger.logging.INFO)
-
-if not self.nLogger:
-    self.nLogger = api.Logger
-
+            for handler in logging.root.handlers[:]]:
+    logging.getLogger().addHandler(nuke_handler)
+    logging.getLogger().setLevel(logging.INFO)
+log.info([handler.get_name() for handler in logging.root.handlers[:]])
 
 def reload_config():
     """Attempt to reload pipeline at run-time.
@@ -83,26 +78,28 @@ def reload_config():
     import importlib
 
     for module in (
-        "app",
-        "app.api",
         "{}.api".format(AVALON_CONFIG),
-        "{}.templates".format(AVALON_CONFIG),
         "{}.nuke.actions".format(AVALON_CONFIG),
-        "{}.nuke.templates".format(AVALON_CONFIG),
-        "{}.nuke.menu".format(AVALON_CONFIG)
+        "{}.nuke.presets".format(AVALON_CONFIG),
+        "{}.nuke.menu".format(AVALON_CONFIG),
+        "{}.nuke.plugin".format(AVALON_CONFIG),
+        "{}.nuke.lib".format(AVALON_CONFIG),
     ):
         log.info("Reloading module: {}...".format(module))
+
         module = importlib.import_module(module)
+
         try:
-            reload(module)
-        except Exception:
             importlib.reload(module)
+        except AttributeError as e:
+            log.warning("Cannot reload module: {}".format(e))
+            reload(module)
+
 
 
 def install():
-
-    api.set_avalon_workdir()
-    reload_config()
+    ''' Installing all requarements for Nuke host
+    '''
 
     log.info("Registering Nuke plug-ins..")
     pyblish.register_plugin_path(PUBLISH_PATH)
@@ -111,7 +108,7 @@ def install():
     avalon.register_plugin_path(avalon.InventoryAction, INVENTORY_PATH)
 
     pyblish.register_callback("instanceToggled", on_pyblish_instance_toggled)
-
+    workfile_settings = lib.WorkfileSettings()
     # Disable all families except for the ones we explicitly want to see
     family_states = [
         "write",
@@ -121,13 +118,30 @@ def install():
     avalon.data["familiesStateDefault"] = False
     avalon.data["familiesStateToggled"] = family_states
 
+    # Workfiles.
+    launch_workfiles = os.environ.get("WORKFILES_STARTUP")
+
+    if launch_workfiles:
+        nuke.addOnCreate(launch_workfiles_app, nodeClass="Root")
+
+    # Set context settings.
+    nuke.addOnCreate(workfile_settings.set_context_settings, nodeClass="Root")
+
     menu.install()
 
-    # load data from templates
-    api.load_data_from_templates()
+
+
+def launch_workfiles_app():
+    '''Function letting start workfiles after start of host
+    '''
+    if not self.workfiles_launched:
+        self.workfiles_launched = True
+        workfiles.show(os.environ["AVALON_WORKDIR"])
 
 
 def uninstall():
+    '''Uninstalling host's integration
+    '''
     log.info("Deregistering Nuke plug-ins..")
     pyblish.deregister_plugin_path(PUBLISH_PATH)
     avalon.deregister_plugin_path(avalon.Loader, LOAD_PATH)
@@ -135,13 +149,15 @@ def uninstall():
 
     pyblish.deregister_callback("instanceToggled", on_pyblish_instance_toggled)
 
-    # reset data from templates
-    api.reset_data_from_templates()
+
+    reload_config()
+    menu.uninstall()
 
 
 def on_pyblish_instance_toggled(instance, old_value, new_value):
     """Toggle node passthrough states on instance toggles."""
-    self.log.info("instance toggle: {}, old_value: {}, new_value:{} ".format(
+
+    log.info("instance toggle: {}, old_value: {}, new_value:{} ".format(
         instance, old_value, new_value))
 
     from avalon.nuke import (
